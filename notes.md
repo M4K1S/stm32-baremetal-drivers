@@ -137,6 +137,12 @@ One consequence worth knowing up front, since it explains a register later on: p
 
 **One-time timeout timer setup, added inside `I2C_Init`:** also calls `TIM_Init(tim_port, 16, 65535)` to configure a dedicated timer at a 1MHz tick rate, used by every transaction function below for timeouts (see next section). Same one-time-setup pattern as `ow_init()`.
 
+**Multiple I2C instances (`I2C1`/`I2C2`/`I2C3`), added for the SSD1306:** `I2C_Init` takes the pin-config branch (`if (port == I2C1) {...}`) purely as a way to pick the right GPIO pins/AF for whichever peripheral pointer was passed in — the CCR/TRISE/FREQ/PE steps below it are identical regardless of instance, so those aren't duplicated per-port. Two more branches were added the same way:
+- **I2C2** (`PB10`=SCL, `PB11`=SDA, AF4) — the chip's documented second I2C bus.
+- **I2C3** (`PA8`=SCL, `PC9`=SDA, AF4) — the chip's third I2C bus. This is the one actually wired up for the OLED (see the SSD1306 section below): on this specific Nucleo-64 board, `PB11` isn't broken out to any header pin at all (confirmed against the board's own printed pinout diagram, not just assumed) — a known Nucleo-64 limitation, not a wiring mistake — so `I2C2` is present in the driver for completeness but not usable on this board. `PA8`/`PC9` are both present on the Arduino-style header (`D7` and the unlabeled pin above `D15`), and are the standard fallback "second I2C bus" pins used on Nucleo boards for exactly this reason.
+
+Multiple I2C peripherals can be brought up independently and used concurrently (e.g. `I2C1` for the DS3231, `I2C3` for the OLED) — each is a fully separate set of registers/pins, nothing shared between them except, in this project, the *timeout timer* (see the OLED wiring note below for why that's safe).
+
 ### Transaction primitives (built on top of `I2C_Init`)
 
 Every function below that waits on the bus or an external device shares an identical timeout structure: reset the timeout timer's `CNT` to 0, start it, poll a status flag while checking `CNT` against `I2C_TIMEOUT_US` (`#define`'d as 5000, i.e. 5ms, applied uniformly rather than tuned per-function), stop the timer, return 1 (success) or 0 (timeout). This is required because a bare `while(!flag);` hangs the whole program forever if a device never ACKs, wiring is bad, or the bus is stuck.
@@ -403,4 +409,59 @@ Read sequence: send CMD17 frame → poll R1 (expect `0x00`) → poll for the **d
 Write sequence: send CMD24 frame → poll R1 → send the data start token yourself (`0xFE`, reversed from the read case, now the host signals "here comes the data") → send 512 bytes from the caller's buffer → send 2 dummy CRC bytes → poll for the **data response token**, masking the low 5 bits (`SD_DATA_ACCEPTED_MASK = 0x1F`) and comparing against `SD_DATA_ACCEPTED_VALUE = 0x05` (a non-match, including the line-idle `0xFF` case, correctly keeps the poll loop going rather than false-accepting) → then a **separate** busy-wait: after accepting the data, the card needs real time to physically commit it to flash, holding the SPI line at `0x00` the whole time; keep clocking `0xFF` until a non-zero byte comes back, using a `finished` flag checked after the loop so a write that never actually completes is correctly reported as a failure rather than being silently claimed as a success just because the loop's fixed iteration count ran out.
 
 Both explicitly track success/failure through every phase (command rejected, data/token timeout, busy-wait timeout) and always deselect CS before returning on any path, mirroring the same "bail out and clean up, never leave the bus/line in an unknown state" discipline used throughout the I2C driver's higher-level functions.
+
+---
+
+## SSD1306 OLED (device-specific layer, built on I2C)
+
+128x64 monochrome OLED, address `0x3C`, driven over I2C rather than the SPI variant some breakouts offer. Two files: `ssd1306.c/h` (hardware I/O + framebuffer + drawing primitives) and `oled_fonts.c/h` (raw bitmap data only, no logic) — kept separate so the bitmap tables (large, rarely-touched) don't clutter the driver logic they're used by.
+
+**Command vs. data framing is just I2C's normal register-address byte, repurposed:** the SSD1306 doesn't have "registers" in the addressable sense DS3231/DS18B20 do — instead, every I2C write starts with one **control byte** that tells the chip whether the bytes that follow are commands (`0x00`) or GDDRAM pixel data (`0x40`). That's structurally identical to "register address, then value(s)" (`I2C_WriteBytes(dev_addr, reg_addr, data, len)`), so no new I2C-level code was needed at all:
+```c
+uint8_t ssd1306_write_command(I2C_TypeDef *port, TIM_TypeDef *tim_port, uint8_t cmd) {
+    return I2C_WriteBytes(port, tim_port, SSD1306_ADDR, SSD1306_CMD_MODE, &cmd, 1);
+}
+uint8_t ssd1306_write_data(I2C_TypeDef *port, TIM_TypeDef *tim_port, uint8_t *data, uint8_t len) {
+    return I2C_WriteBytes(port, tim_port, SSD1306_ADDR, SSD1306_DATA_MODE, data, len);
+}
+```
+(These two were declared in `ssd1306.h` from the start but had no matching definitions for a while — an easy thing to miss since the header compiles fine on its own; it only surfaces as an `undefined reference` at the final link step, once something actually calls them.)
+
+**`ssd1306_init()`** is a fixed command sequence straight from the datasheet's recommended init procedure: charge pump on (`0x8D`/`0x14`, since this board doesn't wire an external VCC for the panel), MUX ratio 63 (`0xA8`/`0x3F`, i.e. 64 rows), zero display offset/start line, segment remap + COM scan direction flipped (`0xA1`/`0xC8`, matches how these particular panels are usually wired internally so the image comes out right-side-up instead of mirrored/upside-down), contrast, normal (non-inverted, non-all-on) display, oscillator frequency, COM pin hardware config (`0xDA`/`0x12`, the standard value for a 128x64 panel), horizontal addressing mode (`0x20`/`0x00`), then display on (`0xAF`) last.
+
+**Framebuffer layout matches the panel's own GDDRAM layout exactly, on purpose:** `OLED_FB` is a flat `1024`-byte array (`128 × 64 / 8`), organized the same way the SSD1306's internal memory is — 8 "pages" of 128 columns each, one byte per column holding 8 vertically-stacked pixels (bit 0 = top row of that page, bit 7 = bottom):
+```c
+int page = y / 8;
+int byte_index = x + (page * OLED_WIDTH);
+uint8_t bit_mask = (1 << (y % 8));
+```
+Because of that match, `oled_update()` (with horizontal addressing mode set in `ssd1306_init()`) can push the whole framebuffer to the panel as one flat sequential dump — set the column range to 0-127 and the page range to 0-7, then stream all 1024 bytes as 8 chunks of 128 (chunked only because `ssd1306_write_data()`'s `len` parameter is a `uint8_t`, so it can't take more than 255 at once) — no per-pixel translation needed between "framebuffer" and "what the panel expects."
+
+**Three different bitmap encodings exist across the icons/fonts, because they were authored for different purposes, not by a consistent convention:**
+- **Icons** (`OLED_Icon_Wifi/SD/Refresh`, 14x11, 28 bytes each): page-major, same layout as `OLED_FB` itself (byte = one column of one page, bit = row within that page). Chosen specifically so `oled_draw_icon()` is nearly a direct copy into the framebuffer — the exact same page/bit math as `oled_set_pixel()`, just walking the icon's own byte array as the source instead of a single set/clear.
+- **Small digits/colon** (`OLED_SmallDigits[10][11]`, `OLED_SmallColon[11]`, 8x11): row-major, **one byte per row**, bit = column within that row.
+- **"Big" digits/symbols** (`OLED_BigDigits[10][108]`, `OLED_BigC/BigMinus/BigDegree/BigPeriod[108]`, notionally 24x36): also row-major, 3 bytes per row. **Not actually usable as drawn** — every one of these tables only ever has non-zero bits in the first byte of each 3-byte row group (i.e. an 8px-wide strip), with the small-digit pattern pasted in at some vertical offset inside an otherwise-blank 108-byte buffer. They were never finished as real large-format glyphs. `oled_draw_status_screen()` deliberately does not use them (see below) — noted here so a future pass filling in real 24x36 art knows exactly what's actually populated today vs. what's still a placeholder.
+
+**Row-major bit order — LSB-first, bit 0 = leftmost column — the opposite of how a byte reads left-to-right in binary, and initially implemented backwards.** `oled_draw_small_glyph()`/`oled_draw_big_digit()` originally read `(bits >> (7 - col))`, i.e. MSB-first, which mirrors every glyph horizontally. This went unnoticed until the first real hardware test, where every digit was legible but flipped left-right, most obviously on `1` (whose top serif normally flares toward the left as you go down; MSB-first made it flare right instead). Fixed to `(bits >> col)`. Worth remembering if any new row-major glyph data is ever hand-authored or imported: there's no compiler check for this, only "does it look right on the actual panel."
+
+**Icons are unaffected by that bug** — their page-major format extracts a *row within a page* from `bit`, not a *column within a row*, so column order was never ambiguous there in the first place. This is exactly why the icon and small-glyph formats needed separate draw functions (`oled_draw_icon()` vs `oled_draw_small_glyph()`) rather than one generic blitter: the two bit layouts aren't interchangeable.
+
+**Big (enlarged) temperature digits are software-scaled from the small font, not drawn from `OLED_BigDigits`,** given that table's unfinished state described above. `oled_draw_big_digit()` walks the same 8x11 small glyph and, for every set bit, fills an `N×N` block of real pixels instead of one:
+```c
+for (int sy = 0; sy < BIG_SCALE; sy++)
+    for (int sx = 0; sx < BIG_SCALE; sx++)
+        oled_set_pixel(x + col * BIG_SCALE + sx, y + row * BIG_SCALE + sy, 1);
+```
+`BIG_SCALE` is `2`, not `3` — a deliberate width-budget decision. The temp readout needs to show a sign, up to 3 integer digits, a decimal point, and 2 fraction digits (worst case for the DS18B20's -55°C to +125°C range: `"-55.00"` or `"125.00"`), plus a degree mark, all across a 128px-wide panel. At `BIG_SCALE=3` (24px/digit) that set of elements doesn't fit; at `2` (16px/digit) the worst case comes in around 100px, comfortably centered with margin. The sign (`oled_draw_big_minus`), decimal point (`oled_draw_big_point`), and degree mark (`oled_draw_degree`) are all drawn as plain filled/outlined rectangles rather than glyph bitmaps — there's no font data for them at small scale to begin with, and a procedural shape scales cleanly with `BIG_SCALE` for free.
+
+**`oled_draw_status_screen()` lays out the whole display in one pass, then leaves pushing it to the panel (`oled_update()`) to the caller** — same separation as `oled_clear()`/`oled_set_pixel()` already have, so multiple draw calls can build up one frame before a single I2C transfer sends it. Layout, top to bottom:
+- **Top-left:** wifi icon, then SD icon 2px to its right — each drawn only when its own "ready" flag is true, so e.g. no SD card just means blank space there rather than a dimmed/placeholder icon. Wifi is currently **always** hidden (`wifi_connected` hardcoded `0` in `app.c`) since no wifi hardware/driver exists yet on this project — a stub, not a bug, waiting on real hardware.
+- **Top-right:** refresh icon, right-aligned to the panel edge, with the `HH:MM` of the last *successful* SD write drawn to its left in the small font — only drawn once at least one write has actually succeeded (`have_refresh`), so a fresh boot with no writes yet just shows the icon alone rather than a misleading `00:00`.
+- **Center:** the big temperature reading described above, horizontally centered based on the actual measured width of whatever's being drawn (varies with digit count and sign), vertically centered against the big-digit height.
+
+**Wiring note — why the OLED ended up on `I2C3` instead of sharing the RTC's `I2C1` bus:** electrically nothing stops two I2C devices at different addresses from sharing one bus (that's the whole point of I2C), and that was the original plan. It moved to its own bus for a simpler reason: separate pins are easier to probe/debug independently on the bench, and once `I2C2`'s default SDA pin (`PB11`) turned out not to be broken out on this Nucleo-64 board's headers at all, `I2C3` on `PA8`/`PC9` was used instead (see the I2C section's multi-instance note above). `OLED_TIM` is still set to the *same* timer the RTC's `I2C1` uses (`RTC_TIM`/`TIM3`) rather than a fourth dedicated timer — safe because this timer is only ever used as a disposable microsecond stopwatch for timeout detection (reset-start-poll-stop, see the I2C timeout pattern), never left running or relied on to hold state between calls, and `app.c`'s I2C transactions are always sequential (one blocking call finishes completely before the next starts), never concurrent, so there's no possibility of two timeout checks racing on the same counter.
+
+**Build-system gotcha, not a driver bug:** the first time `oled_fonts.c` was added to the `BareMetalDrivers` submodule, the STM32CubeIDE-generated `Debug/` build files (`BareMetalDrivers/Src/subdir.mk`, `Debug/objects.list`) still only listed the files that existed when they were last generated — so the new file silently wasn't compiled/linked in at all, producing `undefined reference` errors for every symbol in it (`OLED_Icon_Wifi`, `OLED_SmallDigits`, etc.) despite the source itself being correct. STM32CubeIDE normally regenerates these automatically, but only once it notices the new file — if a driver file is added outside the IDE (e.g. via git, like this submodule), do a **Project → Refresh (F5)** before the next build so the IDE's indexer picks it up and rewrites its own copy of these files.
+
+
 

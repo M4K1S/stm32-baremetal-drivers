@@ -34,8 +34,8 @@ See [`notes.md`](notes.md) for the full register-level walkthrough of every driv
 - **Limitation:** `dutyCycle` is 0-100, not range-checked — values >100 overflow past ARR and pin the output at 100%.
 
 ### I2C (`i2c.c/h`)
-`I2C_Init`, `I2C_Start`, `I2C_Stop`, `I2C_SendAddress`, `I2C_WriteByte`, `I2C_ReadByte`, `I2C_WriteReg`, `I2C_ReadReg`, `I2C_WriteBytes`, `I2C_ReadBytes`. I2C1 (PB8=SCL, PB9=SDA), Standard (100kHz) or Fast (400kHz) mode. Every blocking call is timeout-guarded via a caller-supplied `tim_port`.
-- **Limitation:** I2C1 only wired up.
+`I2C_Init`, `I2C_Start`, `I2C_Stop`, `I2C_SendAddress`, `I2C_WriteByte`, `I2C_ReadByte`, `I2C_WriteReg`, `I2C_ReadReg`, `I2C_WriteBytes`, `I2C_ReadBytes`. I2C1 (PB8=SCL, PB9=SDA), I2C2 (PB10=SCL, PB11=SDA), and I2C3 (PA8=SCL, PC9=SDA) all wired up, each independently usable, Standard (100kHz) or Fast (400kHz) mode. Every blocking call is timeout-guarded via a caller-supplied `tim_port`.
+- **Note:** on a Nucleo-64 board, check your board's own pinout before assuming I2C2 is usable — `PB11` isn't broken out to any header pin on at least the F446RE/F401RE boards, which is why this project's OLED ended up on I2C3 instead. See `notes.md`.
 
 ### SPI (`spi.c/h`)
 `SPI_Init`, `SPI_TransferByte`. SPI1 (PA5=SCK, PA6=MISO, PA7=MOSI), Mode 0, 8-bit frames, selectable prescaler (÷2-÷256). Timeout-guarded the same way as I2C.
@@ -55,6 +55,11 @@ See [`notes.md`](notes.md) for the full register-level walkthrough of every driv
 ### SD card over SPI (`sd.c/h`)
 `sd_send_command`, `sd_init`, `sd_read_block`, `sd_write_block`. SPI-mode SD card access (not SDIO). Handles the full CMD0/CMD8/ACMD41/CMD58 identification sequence, SDHC vs. SDSC block/byte addressing (detected automatically and cached from the OCR's CCS bit), and per-byte SPI timeout checking with clean chip-select handling on every error path.
 - **Limitation:** the SD spec's ≤400kHz SPI clock requirement during card identification isn't enforced by this file — the caller is responsible for calling `SPI_Init` with a slow prescaler before `sd_init` and a faster one after.
+
+### SSD1306 OLED (`ssd1306.c/h`, `oled_fonts.c/h`)
+`ssd1306_init`, `oled_set_pixel`/`oled_get_pixel`/`oled_clear`/`oled_update`, `oled_draw_icon`, `oled_draw_small_time`, `oled_draw_status_screen`. 128x64 I2C OLED (address `0x3C`), built on the I2C driver above — the SSD1306's command/data control byte maps directly onto `I2C_WriteReg`'s register-address parameter, so no new I2C-level primitives were needed. Framebuffer layout matches the panel's own page/column GDDRAM layout exactly, so a full-screen update is one flat sequential byte dump.
+- Ships a status-screen layout (wifi/SD icons, last-refresh timestamp, big temperature reading) built for the Cold-Storage Monitor app — see the app-level repo's README for what it actually shows and why.
+- **Limitation:** the "big" enlarged digits are software-scaled from the small 8x11 font rather than drawn from the `OLED_BigDigits`/`OLED_BigC`/etc. tables in `oled_fonts.c` — those tables are declared 24x36 but were never finished as real large-format art (only an 8px-wide strip is actually populated). See `notes.md` for the full writeup, including a font bit-order bug (glyphs were mirrored) found and fixed along the way.
 
 ## License
 

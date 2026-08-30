@@ -23,6 +23,41 @@ void I2C_Init(I2C_TypeDef *port, I2C_SPEED speed, TIM_TypeDef *tim_port){
         GPIOB->AFR[1] |= (0b0100U << 0) | (0b0100U << 4);    // Set AF4
     }
 
+    if (port == I2C2) {
+        RCC->APB1ENR |= (0b1U << 22); // Start I2C2 Clock
+        RCC->AHB1ENR |= (0b1U << 1);  // Start GPIOB Clock
+
+        GPIOB->MODER &= ~((0b11U << 20) | (0b11U << 22)); // Clear PB10 & PB11
+        GPIOB->MODER |= (0b10U << 20) | (0b10U << 22);     // Set PB10 & PB11 to AF
+        GPIOB->OTYPER |= (0b1U << 10) | (0b1U << 11); // Set PB10 & PB11 to open-drain
+        GPIOB->PUPDR &= ~((0b11U << 20) | (0b11U << 22)); // Clear PB10 & PB11 pull config
+        GPIOB->PUPDR |= (0b01U << 20) | (0b01U << 22);     // Set PB10 & PB11 to pull-up
+
+        GPIOB->AFR[1] &= ~((0b1111U << 8) | (0b1111U << 12)); // Clear AF for PB10 (bits 8-11) & PB11 (bits 12-15)
+        GPIOB->AFR[1] |= (0b0100U << 8) | (0b0100U << 12);    // Set AF4
+    }
+
+    if (port == I2C3) {
+        RCC->APB1ENR |= (0b1U << 23); // Start I2C3 Clock
+        RCC->AHB1ENR |= (0b1U << 0) | (0b1U << 2); // Start GPIOA & GPIOC Clocks
+
+        GPIOA->MODER &= ~(0b11U << 16); // Clear PA8
+        GPIOA->MODER |= (0b10U << 16);   // Set PA8 to AF
+        GPIOA->OTYPER |= (0b1U << 8);    // Set PA8 to open-drain
+        GPIOA->PUPDR &= ~(0b11U << 16); // Clear PA8 pull config
+        GPIOA->PUPDR |= (0b01U << 16);   // Set PA8 to pull-up
+        GPIOA->AFR[1] &= ~(0b1111U << 0); // Clear AF for PA8 (bits 0-3)
+        GPIOA->AFR[1] |= (0b0100U << 0);  // Set AF4
+
+        GPIOC->MODER &= ~(0b11U << 18); // Clear PC9
+        GPIOC->MODER |= (0b10U << 18);   // Set PC9 to AF
+        GPIOC->OTYPER |= (0b1U << 9);    // Set PC9 to open-drain
+        GPIOC->PUPDR &= ~(0b11U << 18); // Clear PC9 pull config
+        GPIOC->PUPDR |= (0b01U << 18);   // Set PC9 to pull-up
+        GPIOC->AFR[1] &= ~(0b1111U << 4); // Clear AF for PC9 (bits 4-7)
+        GPIOC->AFR[1] |= (0b0100U << 4);  // Set AF4
+    }
+
     port->CR2 &= ~(0b111111U); // Clear FREQ bits (bits 5:0)
     port->CR2 |= (fCK / 1000000U); // Set FREQ to fCK in MHz
 
