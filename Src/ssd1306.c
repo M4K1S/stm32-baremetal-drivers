@@ -141,28 +141,26 @@ void oled_draw_small_time(int x, int y, uint8_t hh, uint8_t mm) {
     oled_draw_small_glyph(x, y, OLED_SmallDigits[mm % 10]);
 }
 
-// NOTE: OLED_BigDigits/OLED_BigC/OLED_BigMinus/OLED_BigDegree in oled_fonts.c
-// are declared as 24x36 but only ever have pixels set in an 8-wide strip -
-// they're not actually drawn as big glyphs yet. Rather than render that
-// half-finished art, the big temp reading below is built by scaling the
-// small 8x11 digit font up (giving a legible enlarged digit) and drawing the
-// sign/point/degree marks procedurally. Swap this out once real big glyph
-// bitmaps exist. Scale is 2x (not 3x) so a sign + 3 integer digits + point +
-// 2 fraction digits + degree mark all still fit across the 128px panel.
-#define BIG_SCALE 2
-#define BIG_DIGIT_W (SMALL_GLYPH_W * BIG_SCALE)
-#define BIG_DIGIT_H (SMALL_GLYPH_H * BIG_SCALE)
-#define BIG_GAP 2
-#define BIG_SIGN_W (BIG_DIGIT_W / 2)
-#define BIG_POINT_SIZE 3
-#define DEGREE_SIZE 5
+// Big digits/minus are drawn from OLED_BigDigits/OLED_BigMinus (oled_fonts.c)
+// Scaled 2x as the padding is removed
+#define BIG_ROW_H   16
+#define BIG_COL_W   11
+#define BIG_SCALE   2
+#define BIG_BYTES_PER_ROW 2
+#define BIG_GLYPH_W (BIG_COL_W * BIG_SCALE)
+#define BIG_GLYPH_H (BIG_ROW_H * BIG_SCALE)
+#define BIG_GAP 3
+#define BIG_POINT_SIZE 6
 
-static void oled_draw_big_digit(int x, int y, uint8_t digit) {
-    const uint8_t *glyph = OLED_SmallDigits[digit];
-    for (int row = 0; row < SMALL_GLYPH_H; row++) {
-        uint8_t bits = glyph[row];
-        for (int col = 0; col < SMALL_GLYPH_W; col++) {
-            if (!((bits >> col) & 0x1)) continue;
+// Minus's ink is 7 rows into the digit ink window in the source font
+#define MINUS_ROW_H   3
+#define MINUS_Y_OFFSET (7 * BIG_SCALE)
+
+static void oled_draw_big_glyph_region(int x, int y, const uint8_t *glyph, int row_h) {
+    for (int row = 0; row < row_h; row++) {
+        for (int col = 0; col < BIG_COL_W; col++) {
+            uint8_t byte = glyph[row * BIG_BYTES_PER_ROW + col / 8];
+            if (!((byte >> (col % 8)) & 0x1)) continue;
             for (int sy = 0; sy < BIG_SCALE; sy++) {
                 for (int sx = 0; sx < BIG_SCALE; sx++) {
                     oled_set_pixel(x + col * BIG_SCALE + sx, y + row * BIG_SCALE + sy, 1);
@@ -172,45 +170,38 @@ static void oled_draw_big_digit(int x, int y, uint8_t digit) {
     }
 }
 
-static void oled_draw_big_minus(int x, int y) {
-    int bar_y = y + BIG_DIGIT_H / 2;
-    for (int dy = 0; dy < BIG_SCALE; dy++) {
-        for (int dx = 0; dx < BIG_SIGN_W; dx++) {
-            oled_set_pixel(x + dx, bar_y + dy, 1);
-        }
-    }
+static void oled_draw_big_digit(int x, int y, uint8_t digit) {
+    oled_draw_big_glyph_region(x, y, OLED_BigDigits[digit], BIG_ROW_H);
 }
 
-// Small filled square sitting on the baseline, next to the fraction digits.
+static void oled_draw_big_minus(int x, int y) {
+    oled_draw_big_glyph_region(x, y + MINUS_Y_OFFSET, OLED_BigMinus, MINUS_ROW_H);
+}
+
+// Decimal point
 static void oled_draw_big_point(int x, int y) {
     for (int dy = 0; dy < BIG_POINT_SIZE; dy++) {
         for (int dx = 0; dx < BIG_POINT_SIZE; dx++) {
-            oled_set_pixel(x + dx, y + BIG_DIGIT_H - BIG_POINT_SIZE + dy, 1);
+            oled_set_pixel(x + dx, y + BIG_GLYPH_H - BIG_POINT_SIZE + dy, 1);
+        }
+    }
+}
+// Degree symbol
+static void oled_draw_degree(int x, int y) {
+    for (int row = 0; row < DEGREE_SIZE; row++) {
+        for (int col = 0; col < DEGREE_SIZE; col++) {
+            if (OLED_Degree[row][col]) oled_set_pixel(x + col, y + row, 1);
         }
     }
 }
 
-// Small square ring next to the number - reads as a degree mark without
-// needing a dedicated glyph bitmap.
-static void oled_draw_degree(int x, int y) {
-    for (int i = 0; i < DEGREE_SIZE; i++) {
-        oled_set_pixel(x + i, y, 1);
-        oled_set_pixel(x + i, y + DEGREE_SIZE - 1, 1);
-        oled_set_pixel(x, y + i, 1);
-        oled_set_pixel(x + DEGREE_SIZE - 1, y + i, 1);
-    }
-}
-
-// Draws the full status screen into the framebuffer (does not push it to the
-// panel - call oled_update() afterwards). Icons are only drawn when their
-// "ready" flag is set, so e.g. a disconnected wifi/absent SD card just shows
-// nothing rather than a stale icon. temp_centi is the temperature in
-// hundredths of a degree (e.g. -1234 -> "-12.34").
+// Draws the full status screen into the framebuffer
 void oled_draw_status_screen(uint8_t wifi_connected, uint8_t sd_ready,
                               uint8_t have_refresh, uint8_t refresh_hh, uint8_t refresh_mm,
-                              uint8_t have_temp, int32_t temp_centi) {
+                              uint8_t have_temp, int32_t temp_deci) {
     oled_clear();
 
+    // Set status icons if they are enabled
     if (wifi_connected) oled_draw_icon(0, 0, OLED_Icon_Wifi);
     if (sd_ready)        oled_draw_icon(ICON_W + 2, 0, OLED_Icon_SD);
 
@@ -220,11 +211,12 @@ void oled_draw_status_screen(uint8_t wifi_connected, uint8_t sd_ready,
         oled_draw_small_time(OLED_WIDTH - ICON_W - 2 - time_w, 0, refresh_hh, refresh_mm);
     }
 
+    // Write temp with 1 dp
     if (have_temp) {
-        uint8_t neg = temp_centi < 0;
-        int32_t mag = neg ? -temp_centi : temp_centi;
-        int32_t whole = mag / 100;
-        int32_t frac = mag % 100;
+        uint8_t neg = temp_deci < 0;
+        int32_t mag = neg ? -temp_deci : temp_deci;
+        int32_t whole = mag / 10;
+        uint8_t tenth = (uint8_t)(mag % 10);
 
         uint8_t int_digits[3];
         uint8_t n_int = 0;
@@ -232,31 +224,28 @@ void oled_draw_status_screen(uint8_t wifi_connected, uint8_t sd_ready,
         if (whole >= 10)  int_digits[n_int++] = (uint8_t)((whole / 10) % 10);
         int_digits[n_int++] = (uint8_t)(whole % 10);
 
-        uint8_t frac_digits[2] = { (uint8_t)(frac / 10), (uint8_t)(frac % 10) };
-
-        // Elements drawn left to right: [sign] digit* point digit digit degree,
-        // with BIG_GAP between every pair of them.
-        uint8_t n_elements = (neg ? 1 : 0) + n_int + 1 + 2 + 1;
-        int total_w = (neg ? BIG_SIGN_W : 0) + n_int * BIG_DIGIT_W + BIG_POINT_SIZE
-                    + 2 * BIG_DIGIT_W + DEGREE_SIZE + BIG_GAP * (n_elements - 1);
+        // Elements drawn left to right: sign digit decimal digit degree,
+        // with BIG_GAP between every pair of them
+        uint8_t n_elements = (neg ? 1 : 0) + n_int + 1 + 1 + 1;
+        int total_w = (neg ? BIG_GLYPH_W : 0) + n_int * BIG_GLYPH_W + BIG_POINT_SIZE
+                    + BIG_GLYPH_W + DEGREE_SIZE + BIG_GAP * (n_elements - 1);
 
         int x = (OLED_WIDTH - total_w) / 2;
-        int y = (OLED_HEIGHT - BIG_DIGIT_H) / 2;
+        int y = (OLED_HEIGHT - BIG_GLYPH_H) / 2;
 
+        // Add minus if negative
         if (neg) {
             oled_draw_big_minus(x, y);
-            x += BIG_SIGN_W + BIG_GAP;
+            x += BIG_GLYPH_W + BIG_GAP;
         }
         for (uint8_t i = 0; i < n_int; i++) {
             oled_draw_big_digit(x, y, int_digits[i]);
-            x += BIG_DIGIT_W + BIG_GAP;
+            x += BIG_GLYPH_W + BIG_GAP;
         }
         oled_draw_big_point(x, y);
         x += BIG_POINT_SIZE + BIG_GAP;
-        for (uint8_t i = 0; i < 2; i++) {
-            oled_draw_big_digit(x, y, frac_digits[i]);
-            x += BIG_DIGIT_W + BIG_GAP;
-        }
+        oled_draw_big_digit(x, y, tenth);
+        x += BIG_GLYPH_W + BIG_GAP;
         oled_draw_degree(x, y);
     }
 }

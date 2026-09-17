@@ -14,13 +14,11 @@ extern const uint8_t OLED_SmallDigits[10][11];
 // 8x11 colon
 extern const uint8_t OLED_SmallColon[11];
 
-// 24x36 digits
-extern const uint8_t OLED_BigDigits[10][108];
+// 11x16 digits and minus
+extern const uint8_t OLED_BigDigits[10][32];
+extern const uint8_t OLED_BigMinus[6];
 
-// 24x36 symbols
-extern const uint8_t OLED_BigC[108];
-extern const uint8_t OLED_BigMinus[108];
-extern const uint8_t OLED_BigDegree[108];
-extern const uint8_t OLED_BigPeriod[108];
+#define DEGREE_SIZE 6
+extern const uint8_t OLED_Degree[DEGREE_SIZE][DEGREE_SIZE];
 
 #endif

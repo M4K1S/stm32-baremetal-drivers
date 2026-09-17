@@ -11,4 +11,4 @@ void TIM_Start(TIM_TypeDef *port);
 void TIM_Stop(TIM_TypeDef *port);
 uint8_t TIM_Ready(TIM_TypeDef *port);
 
-#endif /* INC_TIM_H_ */
+#endif

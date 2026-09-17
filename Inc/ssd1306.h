@@ -28,6 +28,6 @@ void oled_draw_icon(int x, int y, const uint8_t *icon);
 void oled_draw_small_time(int x, int y, uint8_t hh, uint8_t mm);
 void oled_draw_status_screen(uint8_t wifi_connected, uint8_t sd_ready,
                               uint8_t have_refresh, uint8_t refresh_hh, uint8_t refresh_mm,
-                              uint8_t have_temp, int32_t temp_centi);
+                              uint8_t have_temp, int32_t temp_deci);
 
 #endif
