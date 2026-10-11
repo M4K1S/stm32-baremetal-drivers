@@ -1,7 +1,4 @@
 #include "tim.h"
-#include "clock.h"
-
-static const uint32_t fCK = FCK_HZ; // Clock speed of TIM
 
 static void TIM_EnableClock(TIM_TypeDef *port) {
     if      (port == TIM2) RCC->APB1ENR |= (0b1U << 0); // Start TIM2 clock
@@ -31,8 +28,7 @@ void TIM_Delay_us(TIM_TypeDef *port, uint32_t micros){
     port->CR1 &= ~(0b1U);
 }
 
-// TIM_Delay_us can't span more than one timer period (ARR = 65535 @ 1MHz tick,
-// so ~65ms max per call) -- chain calls to build longer waits.
+// TIM_Delay_us tops out at one timer period (~65 ms), so chain calls
 void TIM_Delay_ms(TIM_TypeDef *port, uint32_t ms) {
     for (uint32_t i = 0; i < ms; i++) {
         TIM_Delay_us(port, 1000);

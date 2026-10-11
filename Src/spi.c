@@ -1,9 +1,8 @@
 #include "spi.h"
+
 #include "clock.h"
 
 #define SPI_TIMEOUT_US 5000U // 5ms timeout for SPI
-
-static const uint32_t fCK = FCK_HZ; // Clock speed of SPI
 
 void SPI_Init(SPI_TypeDef *port, SPI_Prescaler prescaler, TIM_TypeDef *tim_port) {
     if (port == SPI1) {
@@ -17,14 +16,14 @@ void SPI_Init(SPI_TypeDef *port, SPI_Prescaler prescaler, TIM_TypeDef *tim_port)
         GPIOA->AFR[0] |= (0b0101U << 20) | (0b0101U << 24) | (0b0101U << 28);    // Set AF5
     }
 
-    // Configure CR1 - leave CPHA and CPOL at 0 for SPI mode 0 leave MSB first leave 8 bit data frame
-    // Set MASTER config and prescaler
-    // SSM=1, SSI=1: CS is a plain GPIO here (not the hardware NSS pin)
+    port->CR1 &= ~(0b1U << 6); // SPE off: the prescaler can only change while disabled
+
+    // master, mode 0, MSB first, 8-bit; SSM=1/SSI=1 since CS is a plain GPIO
     port->CR1 = (0b1U << 2) | (prescaler << 3) | (0b1U << 8) | (0b1U << 9);
     // Enable SPI
     port->CR1 |= (0b1U << 6);
 
-    TIM_Init(tim_port, 16, 65535); // configure 1MHz tick rate for SPI timeouts
+    TIM_Init(tim_port, TIM_1MHZ_PRESCALER, 65535); // 1MHz tick for SPI timeouts
 }
 
 uint8_t SPI_TransferByte(SPI_TypeDef *port, TIM_TypeDef *tim_port, uint8_t byte_in, uint8_t *byte_out) {

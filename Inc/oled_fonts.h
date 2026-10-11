@@ -7,6 +7,7 @@
 extern const uint8_t OLED_Icon_Wifi[28];
 extern const uint8_t OLED_Icon_SD[28];
 extern const uint8_t OLED_Icon_Refresh[28];
+extern const uint8_t OLED_Icon_Mute[28];
 
 // 8x11 digits
 extern const uint8_t OLED_SmallDigits[10][11];

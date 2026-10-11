@@ -1,11 +1,9 @@
 #include "sd.h"
 
-// Set by sd_init() from the CCS bit in the OCR - SDHC/SDXC cards address
+// SDHC/SDXC cards use block addressing; set by sd_init()
 static uint8_t sd_card_is_sdhc = 0;
 
-// Wraps SPI_TransferByte with the timeout check every call needs. On a SPI
-// timeout, deselects the card (any in-progress command frame is abandoned)
-// and returns 0 so callers can bail out uniformly.
+// SPI_TransferByte with a timeout check; deselects the card on failure
 static uint8_t sd_xfer(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDef *cs_port, uint8_t cs_pin, uint8_t byte_in, uint8_t *byte_out) {
     if (!SPI_TransferByte(spi_port, tim_port, byte_in, byte_out)) {
         GPIO_Set(cs_port, cs_pin, 1); // deselect on SPI timeout
@@ -16,13 +14,13 @@ static uint8_t sd_xfer(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDe
 
 uint8_t sd_send_command(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDef *cs_port, uint8_t cs_pin, uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t has_extra, uint8_t *extra_bytes) {
     uint8_t dummy;
-    uint8_t response = 0xFF; // Will hold card's R1 response - no real response can ever equal this because bit 7 must be 0
+    uint8_t response = 0xFF; // R1 reply; 0xFF = none (a real one has bit 7 clear)
 
     GPIO_Set(cs_port, cs_pin, 0); // select the card
 
     // Send the 6-byte command frame
-    if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, 0x40 | cmd, &dummy)) return 0xFF;          // byte 0: start/transmission bits (01) + cmd number
-    if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, (arg >> 24) & 0xFF, &dummy)) return 0xFF;  // 32-bit argument, MSB first
+    if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, 0x40 | cmd, &dummy)) return 0xFF;          // start bits + command
+    if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, (arg >> 24) & 0xFF, &dummy)) return 0xFF;  // argument, MSB first
     if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, (arg >> 16) & 0xFF, &dummy)) return 0xFF;
     if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, (arg >> 8)  & 0xFF, &dummy)) return 0xFF;
     if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, (arg >> 0)  & 0xFF, &dummy)) return 0xFF;
@@ -59,7 +57,7 @@ uint8_t sd_init(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDef *cs_p
 
     // Send 10 dummy bytes to get 74 clock pulses (74/8 = 9.25, round up to 10)
     for (uint8_t i = 0; i < 10; i++) {
-        if (!SPI_TransferByte(spi_port, tim_port, 0xFF, &dummy)) return 0; // SPI timed out before the card even saw a command
+        if (!SPI_TransferByte(spi_port, tim_port, 0xFF, &dummy)) return 0; // SPI timeout
     }
 
     // Send CMD0 - expect idle state (0x01)
@@ -85,7 +83,7 @@ uint8_t sd_init(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDef *cs_p
     }
     if (!ready) return 0; // card never finished initializing
 
-    // Send CMD58 - read OCR, check CCS bit (bit 30, i.e. bit 6 of the first OCR byte) for SDHC/SDXC
+    // CMD58: read the OCR; the CCS bit marks SDHC/SDXC
     response = sd_send_command(spi_port, tim_port, cs_port, cs_pin, SD_CMD58, 0, SD_DUMMY_CRC, 1, extra);
     if (response != 0x00) return 0;
 
@@ -123,9 +121,9 @@ uint8_t sd_read_block(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDef
         return 0; // card rejected the read command
     }
 
-    // Poll for the data start token - needs many more tries, card is physically reading flash
+    // wait for the data start token (the card is reading flash)
     uint8_t got_token = 0;
-    for (uint16_t i = 0; i < SD_DATA_TIMEOUT_TRIES; i++) {
+    for (uint32_t i = 0; i < SD_READ_TIMEOUT_TRIES; i++) {
         if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, 0xFF, &response)) return 0;
         if (response == SD_DATA_START_TOKEN) {
             got_token = 1;
@@ -151,7 +149,7 @@ uint8_t sd_read_block(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDef
     return 1; // success
 }
 
-uint8_t sd_write_block(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDef *cs_port, uint8_t cs_pin, uint32_t addr, uint8_t *buf) {
+uint8_t sd_write_block(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDef *cs_port, uint8_t cs_pin, uint32_t addr, const uint8_t *buf) {
     uint8_t dummy;
     uint8_t response;
 
@@ -201,10 +199,10 @@ uint8_t sd_write_block(SPI_TypeDef *spi_port, TIM_TypeDef *tim_port, GPIO_TypeDe
         return 0; // card rejected the data
     }
 
-    // Wait for the card to finish its internal write - it holds the line busy (0x00) until done
+    // wait out the card's internal write (line held at 0x00)
     uint8_t busy_response = 0x00;
     uint8_t finished = 0;
-    for (uint16_t i = 0; i < SD_DATA_TIMEOUT_TRIES; i++) {
+    for (uint32_t i = 0; i < SD_BUSY_TIMEOUT_TRIES; i++) {
         if (!sd_xfer(spi_port, tim_port, cs_port, cs_pin, 0xFF, &busy_response)) return 0;
         if (busy_response == 0xFF) {
             finished = 1;

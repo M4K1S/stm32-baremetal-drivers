@@ -19,7 +19,7 @@ void I2C_Init(I2C_TypeDef *port, I2C_SPEED speed, TIM_TypeDef *tim_port){
         GPIOB->PUPDR |= (0b01U << 16) | (0b01U << 18);     // Set PB8 & PB9 to pull-up
 
 
-        GPIOB->AFR[1] &= ~((0b1111U << 0) | (0b1111U << 4)); // Clear AF for PB8 (bits 0-3) & PB9 (bits 4-7)
+        GPIOB->AFR[1] &= ~((0b1111U << 0) | (0b1111U << 4)); // Clear AF for PB8, PB9
         GPIOB->AFR[1] |= (0b0100U << 0) | (0b0100U << 4);    // Set AF4
     }
 
@@ -33,7 +33,7 @@ void I2C_Init(I2C_TypeDef *port, I2C_SPEED speed, TIM_TypeDef *tim_port){
         GPIOB->PUPDR &= ~((0b11U << 20) | (0b11U << 22)); // Clear PB10 & PB11 pull config
         GPIOB->PUPDR |= (0b01U << 20) | (0b01U << 22);     // Set PB10 & PB11 to pull-up
 
-        GPIOB->AFR[1] &= ~((0b1111U << 8) | (0b1111U << 12)); // Clear AF for PB10 (bits 8-11) & PB11 (bits 12-15)
+        GPIOB->AFR[1] &= ~((0b1111U << 8) | (0b1111U << 12)); // Clear AF for PB10, PB11
         GPIOB->AFR[1] |= (0b0100U << 8) | (0b0100U << 12);    // Set AF4
     }
 
@@ -58,21 +58,23 @@ void I2C_Init(I2C_TypeDef *port, I2C_SPEED speed, TIM_TypeDef *tim_port){
         GPIOC->AFR[1] |= (0b0100U << 4);  // Set AF4
     }
 
+    port->CR1 &= ~(0b1U); // PE off: CR2/CCR/TRISE can only change while disabled
+
     port->CR2 &= ~(0b111111U); // Clear FREQ bits (bits 5:0)
     port->CR2 |= (fCK / 1000000U); // Set FREQ to fCK in MHz
 
     if(speed == SPEED_FAST) {
-        port->CCR = (0b1U << 15) | (fCK / (3 * fastCK)); // If FAST mode then set F/S bit to 1 and set CCR for fast mode
-        port->TRISE = (fCK / 1000000U) * 3U / 10U + 1U; // TRISE (max rise time) = (FREQ_MHz * 300 / 1000) + 1
+        port->CCR = (0b1U << 15) | ((fCK + 3 * fastCK - 1) / (3 * fastCK)); // fast mode, rounded up so SCL stays <= 400kHz
+        port->TRISE = (fCK / 1000000U) * 3U / 10U + 1U; // max rise time: FREQ_MHz * 0.3 + 1
     }
     if(speed == SPEED_STANDARD) {
-        port->CCR = (fCK / (2 * standCK)); // If STANDARD mode then set F/S bit to 0 and set CCR for standard mode
-        port->TRISE = (fCK / 1000000U) + 1U; // TRISE (max rise time) FREQ_MHz + 1
+        port->CCR = (fCK / (2 * standCK)); // standard mode: CCR
+        port->TRISE = (fCK / 1000000U) + 1U; // max rise time: FREQ_MHz + 1
     }
 
     port->CR1 |= (0b1U); // Set PE bit to 1 - enable I2C
 
-    TIM_Init(tim_port, 16, 65535); // configure 1MHz tick rate for I2C timeouts
+    TIM_Init(tim_port, TIM_1MHZ_PRESCALER, 65535); // 1MHz tick for I2C timeouts
 }
 
 uint8_t I2C_Start(I2C_TypeDef *port, TIM_TypeDef *tim_port) {

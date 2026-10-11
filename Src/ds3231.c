@@ -28,9 +28,7 @@ uint8_t rtc_set_time(I2C_TypeDef *port, TIM_TypeDef *tim_port, RTC_Time *time) {
         return 0;
     }
 
-    // Writing the time registers does NOT clear OSF on its own -- per the
-    // datasheet it's only cleared by an explicit write, so do that now that
-    // we've just given the RTC a known-good time.
+    // OSF is only cleared by an explicit write
     uint8_t status;
     if (!I2C_ReadReg(port, tim_port, DS3231_ADDR, DS3231_REG_STATUS, &status)) {
         return 0;
@@ -53,10 +51,10 @@ uint8_t rtc_get_time(I2C_TypeDef *port, TIM_TypeDef *tim_port, RTC_Time *time) {
 
         time->seconds = bcd_to_dec(buffer[0]);
         time->minutes = bcd_to_dec(buffer[1]);
-        time->hours   = bcd_to_dec(buffer[2] & 0b00111111U); // mask off 12/24hr mode bits
+        time->hours   = bcd_to_dec(buffer[2] & 0b00111111U); // 24h mode: drop the 12/24 flag bits
         time->day     = bcd_to_dec(buffer[3]);
         time->date    = bcd_to_dec(buffer[4]);
-        time->month   = bcd_to_dec(buffer[5]);
+        time->month   = bcd_to_dec(buffer[5] & 0b00011111U); // bit 7 is the century flag
         time->year    = bcd_to_dec(buffer[6]);
 
         return 1;

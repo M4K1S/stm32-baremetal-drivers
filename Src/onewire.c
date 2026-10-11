@@ -1,8 +1,9 @@
 #include "onewire.h"
+#include "clock.h"
 
 void ow_init(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim_port) {
     GPIO_Init(gpio_port, pin, OUTPUT, OPEN_DRAIN); // open-drain setup
-    TIM_Init(tim_port, 16, 65535); // configure 1MHz tick rate
+    TIM_Init(tim_port, TIM_1MHZ_PRESCALER, 65535); // 1MHz tick
     GPIO_Set(gpio_port, pin, 1);  // release the line, let it idle HIGH
 }
 
@@ -19,9 +20,8 @@ uint8_t ow_reset(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim_port) {
     TIM_Delay_us(tim_port, 100);
     uint8_t presence = !GPIO_Read(gpio_port, pin); // LOW = presence detected, so invert
 
-    // Complete the remaining tRSTH (480us total high time) before returning,
-    // so the bus is in a known idle state before the next operation begins
-    TIM_Delay_us(tim_port, 380); // 100 + 380 = 480us total since release
+    // finish tRSTH (480 us total) so the bus is idle
+    TIM_Delay_us(tim_port, 380);
 
     return presence;
 }

@@ -16,8 +16,15 @@ typedef enum {
     ANALOG
 } GPIO_Mode;
 
+typedef enum {
+    PULL_NONE,
+    PULL_UP,
+    PULL_DOWN
+} GPIO_Pull;
+
 void GPIO_Init(GPIO_TypeDef *port, uint8_t pin, GPIO_Mode mode, GPIO_OutputType type);
 void GPIO_SetMode(GPIO_TypeDef *port, uint8_t pin, GPIO_Mode mode);
+void GPIO_SetPull(GPIO_TypeDef *port, uint8_t pin, GPIO_Pull pull);
 void GPIO_Set(GPIO_TypeDef *port, uint8_t pin, uint8_t state);
 void GPIO_Toggle(GPIO_TypeDef *port, uint8_t pin);
 uint8_t GPIO_Read(GPIO_TypeDef *port, uint8_t pin);

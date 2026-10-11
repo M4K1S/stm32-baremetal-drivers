@@ -48,6 +48,13 @@ uint8_t ds18b20_read_temp(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim
         scratchpad[i] = ow_read_byte(gpio_port, pin, tim_port);
     }
 
+    // A bus stuck low reads all zeros, which passes the CRC (CRC of zeros is 0)
+    uint8_t all_zero = 1;
+    for (uint8_t i = 0; i < DS18B20_SCRATCHPAD_LEN; i++) {
+        if (scratchpad[i] != 0x00) all_zero = 0;
+    }
+    if (all_zero) return 0;
+
     // Reject the reading if the 1-Wire transfer got corrupted
     if (ow_crc8(scratchpad, DS18B20_SCRATCHPAD_LEN - 1) != scratchpad[DS18B20_SCRATCHPAD_LEN - 1]) {
         return 0;

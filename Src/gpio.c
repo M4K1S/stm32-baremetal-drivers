@@ -22,6 +22,10 @@ void GPIO_SetMode(GPIO_TypeDef *port, uint8_t pin, GPIO_Mode mode) {
     port->MODER &= ~(0b11U << (pin * 2)); // Clear MODER bits
     port->MODER |= (mode << (pin * 2));   // Set MODER
 }
+void GPIO_SetPull(GPIO_TypeDef *port, uint8_t pin, GPIO_Pull pull) {
+    port->PUPDR &= ~(0b11U << (pin * 2)); // Clear PUPDR bits
+    port->PUPDR |= (pull << (pin * 2));   // Set PUPDR
+}
 void GPIO_Set(GPIO_TypeDef *port, uint8_t pin, uint8_t state) {
     if (state) port->ODR |= (0b1U << pin); // Sets pin HIGH if state is 1
     else port->ODR &= ~(0b1U << pin); // Sets pin LOW if state is 0

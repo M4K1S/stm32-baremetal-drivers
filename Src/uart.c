@@ -1,48 +1,7 @@
 #include "uart.h"
 #include "clock.h"
-#include <math.h>
 
-/*
- * ================= UART Pin Map =================
- *
- * USART1
- *   TX -> PA9
- *   RX -> PA10
- *   AF7
- *
- * USART2
- *   TX -> PA2
- *   RX -> PA3
- *   AF7
- *
- * USART3
- *   TX -> PB10
- *   RX -> PB11
- *   AF7
- *
- * UART4
- *   TX -> PC10
- *   RX -> PC11
- *   AF8
- *
- * UART5
- *   TX -> PC12
- *   RX -> PD2
- *   AF8
- *
- * USART6
- *   TX -> PC6
- *   RX -> PC7
- *   AF8
- *
- * Default Configuration:
- *   - 8 data bits
- *   - 1 stop bit
- *   - No parity
- *   - No flow control
- */
-
-static const uint32_t fCK = FCK_HZ; // Clock speed of USART
+// 8 data bits, 1 stop bit, no parity, no flow control; pins are set per port in UART_Init
 
 void UART_Init(USART_TypeDef *port, uint32_t baudRate) {
 
@@ -104,17 +63,10 @@ void UART_Init(USART_TypeDef *port, uint32_t baudRate) {
 
     // CONFIGURE BAUD RATE
 
-    float USARTDIV = fCK / (16.0 * baudRate);
-    uint32_t mantissa = (uint32_t)USARTDIV; // Mantissa is the whole number part taken from USARTDIV
-    uint32_t DIV_Fraction = (uint32_t)round(16.0 * (USARTDIV - mantissa)); // Fraction Part of USARTDIV: Multiply DIV_Fraction by 16 (4 bits) and round to nearest real #
+    if (baudRate == 0) return;
 
-    // If fraction is 16 (1) set it to 0 carry into the mantissa
-    if (DIV_Fraction == 16) {
-        DIV_Fraction = 0;
-        mantissa++;
-    }
-
-    port->BRR = (mantissa << 4) | DIV_Fraction; // DIV_Fraction is at bit 0-3 and Mantissa is at bit 4-15 of BRR
+    // BRR is fCK/baud as a 12.4 fixed-point number (oversampling by 16)
+    port->BRR = (FCK_HZ + baudRate / 2U) / baudRate; // rounded to nearest
 
     // Enable UE, RE, and TE, Set M to 0 (8 bit)
 

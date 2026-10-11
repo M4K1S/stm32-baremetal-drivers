@@ -106,8 +106,7 @@ uint8_t oled_update(I2C_TypeDef *port, TIM_TypeDef *tim_port) {
 #define SMALL_GLYPH_H 11
 #define SMALL_CHAR_SPACING 7
 
-// Icons are stored page-major (one byte per column per 8-row page), same
-// layout as OLED_FB, so each bit maps directly to a pixel.
+// Icons are page-major, same layout as OLED_FB
 void oled_draw_icon(int x, int y, const uint8_t *icon) {
     uint8_t pages = (ICON_H + 7) / 8;
     for (uint8_t page = 0; page < pages; page++) {
@@ -122,8 +121,7 @@ void oled_draw_icon(int x, int y, const uint8_t *icon) {
     }
 }
 
-// Small digits/colon are stored row-major, LSB-first (bit 0 = leftmost
-// column), one byte per row.
+// Small glyphs: one byte per row, bit 0 = leftmost column
 static void oled_draw_small_glyph(int x, int y, const uint8_t *glyph) {
     for (int row = 0; row < SMALL_GLYPH_H; row++) {
         uint8_t bits = glyph[row];
@@ -141,8 +139,7 @@ void oled_draw_small_time(int x, int y, uint8_t hh, uint8_t mm) {
     oled_draw_small_glyph(x, y, OLED_SmallDigits[mm % 10]);
 }
 
-// Big digits/minus are drawn from OLED_BigDigits/OLED_BigMinus (oled_fonts.c)
-// Scaled 2x as the padding is removed
+// Big digits and minus come from oled_fonts.c, drawn at 2x
 #define BIG_ROW_H   16
 #define BIG_COL_W   11
 #define BIG_SCALE   2
@@ -198,7 +195,8 @@ static void oled_draw_degree(int x, int y) {
 // Draws the full status screen into the framebuffer
 void oled_draw_status_screen(uint8_t wifi_connected, uint8_t sd_ready,
                               uint8_t have_refresh, uint8_t refresh_hh, uint8_t refresh_mm,
-                              uint8_t have_temp, int32_t temp_deci) {
+                              uint8_t have_temp, int32_t temp_deci,
+                              uint8_t muted, uint8_t mute_hh, uint8_t mute_mm) {
     oled_clear();
 
     // Set status icons if they are enabled
@@ -224,8 +222,7 @@ void oled_draw_status_screen(uint8_t wifi_connected, uint8_t sd_ready,
         if (whole >= 10)  int_digits[n_int++] = (uint8_t)((whole / 10) % 10);
         int_digits[n_int++] = (uint8_t)(whole % 10);
 
-        // Elements drawn left to right: sign digit decimal digit degree,
-        // with BIG_GAP between every pair of them
+        // sign, digits, point, tenth, degree: BIG_GAP between each
         uint8_t n_elements = (neg ? 1 : 0) + n_int + 1 + 1 + 1;
         int total_w = (neg ? BIG_GLYPH_W : 0) + n_int * BIG_GLYPH_W + BIG_POINT_SIZE
                     + BIG_GLYPH_W + DEGREE_SIZE + BIG_GAP * (n_elements - 1);
@@ -247,5 +244,11 @@ void oled_draw_status_screen(uint8_t wifi_connected, uint8_t sd_ready,
         oled_draw_big_digit(x, y, tenth);
         x += BIG_GLYPH_W + BIG_GAP;
         oled_draw_degree(x, y);
+    }
+
+    // mute icon + time left (HH:MM), bottom-left
+    if (muted) {
+        oled_draw_icon(2, OLED_HEIGHT - ICON_H, OLED_Icon_Mute);
+        oled_draw_small_time(2 + ICON_W + 3, OLED_HEIGHT - SMALL_GLYPH_H, mute_hh, mute_mm);
     }
 }
