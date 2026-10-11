@@ -2,6 +2,8 @@
 
 Step-by-step register sequences for each peripheral, plus the math behind any timing calculations. Written as a personal reference for how/why each driver was built.
 
+**This is a design log, not the API reference.** [`README.md`](README.md) is the current reference; where this file disagrees with it or the code, those win. Known differences: `UART_Init` now computes `BRR` with integer maths (see the UART section), and the ESP8266 section below describes the first version of the driver. It has since gained the idle hook, constant-cost reply matching, hourly uploads and time/config sync (see the README).
+
 ---
 
 ## GPIO
@@ -53,16 +55,11 @@ Needed any time an open-drain line is being driven by something else (another de
 ```
 USARTDIV = fCK / (16 × baudRate)
 ```
-`USARTDIV` isn't a whole number in general. It has a fractional part, and `BRR` needs the whole part (mantissa) and fractional part (as a 4-bit value, 0-15) stored separately:
+`USARTDIV` isn't a whole number in general. `BRR` stores it as a 12.4 fixed-point number: the whole part (mantissa) in bits 15:4 and a 4-bit fraction in bits 3:0. Multiplying `USARTDIV` by 16 gives exactly that fixed-point value:
 ```
-mantissa = floor(USARTDIV)
-DIV_Fraction = round(16 × (USARTDIV - mantissa))
+BRR = round(16 × USARTDIV) = round(fCK / baudRate)
 ```
-If `DIV_Fraction` rounds up to `16` (overflow), reset it to `0` and increment `mantissa` by 1 to carry over.
-```
-BRR = (mantissa << 4) | DIV_Fraction
-```
-Mantissa occupies bits 15:4, fraction occupies bits 3:0.
+In code that is one integer expression, `(FCK_HZ + baudRate / 2) / baudRate`, which rounds to nearest and carries a fraction overflow into the mantissa automatically. (The first version split the mantissa and fraction by hand with floating point; it produced identical values for every common baud rate, but pulled in `libm` and doubles. At 115200 and 16 MHz, `BRR = 139`, 0.08 % off.)
 
 **Sending a char:** wait for `TXE` (bit 7 of `SR`) to be 1 (transmit buffer empty), then write the byte to `DR`.
 **Receiving a char:** wait for `RXNE` (bit 5 of `SR`) to be 1 (data ready), then read `DR`.
@@ -503,6 +500,8 @@ The decimal point stays a small procedural filled square rather than a font glyp
 ---
 
 ## ESP8266 (WiFi, AT-command layer, built on UART)
+
+> **Historical.** This section describes the first version of the driver (one `esp_wait_response` that used `strstr`, and a single `esp_send_reading`). The current behaviour is in the README: per-byte `strstr` was replaced by a constant-cost tail match because it overran the 115200-baud UART, and the driver gained an idle hook, join/connect result handling, `esp_send_hourly`, and `esp_sync_time` with the server's config headers. The bring-up story at the end of this section is still accurate.
 
 The ESP-01S isn't driven at the register/protocol level like the other peripherals in this repo — it runs its own AT-command firmware over UART, so this driver's job is building/sending the right ASCII command strings and pattern-matching the module's ASCII replies, not bit-banging anything. `esp_send_command`, `esp_wait_response`, `esp_connect_wifi`, `esp_send_reading`.
 
