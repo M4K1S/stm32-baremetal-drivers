@@ -338,6 +338,16 @@ static uint8_t parse_u32(const char *s, uint32_t *out) {
     return 1;
 }
 
+// Value of the header `name` (e.g. "X-Alarm-Threshold: "), or NULL if it is missing
+// or the capture was cut off before the end of its line. A half-read number would
+// otherwise parse as a different, wrong one (a threshold of -1 for -15.0).
+static const char *header_value(const char *buf, const char *name) {
+    const char *tag = strstr(buf, name);
+    if (!tag) return NULL;
+    const char *value = tag + strlen(name);
+    return strchr(value, '\r') ? value : NULL;
+}
+
 // Time sync from the server's Date header; also reads its X-* config headers.
 uint8_t esp_sync_time(USART_TypeDef *port, TIM_TypeDef *tim_port, const char *host, RTC_Time *time, int8_t *tz_offset_hours, float *alarm_threshold_c, uint32_t *alarm_delay_min, uint32_t *server_last_key) {
     char buf[512];
@@ -350,25 +360,11 @@ uint8_t esp_sync_time(USART_TypeDef *port, TIM_TypeDef *tim_port, const char *ho
         return 0;
     }
 
-    const char *tz_tag = strstr(buf, "X-Tz-Offset: ");
-    if (tz_tag) {
-        parse_int8(tz_tag + (sizeof("X-Tz-Offset: ") - 1), tz_offset_hours);
-    }
-
-    const char *thresh_tag = strstr(buf, "X-Alarm-Threshold: ");
-    if (thresh_tag) {
-        parse_float(thresh_tag + (sizeof("X-Alarm-Threshold: ") - 1), alarm_threshold_c);
-    }
-
-    const char *delay_tag = strstr(buf, "X-Alarm-Delay: ");
-    if (delay_tag) {
-        parse_u32(delay_tag + (sizeof("X-Alarm-Delay: ") - 1), alarm_delay_min);
-    }
-
-    const char *last_tag = strstr(buf, "X-Last-Hour: ");
-    if (last_tag) {
-        parse_u32(last_tag + (sizeof("X-Last-Hour: ") - 1), server_last_key);
-    }
+    const char *v;
+    if ((v = header_value(buf, "X-Tz-Offset: ")))       parse_int8(v, tz_offset_hours);
+    if ((v = header_value(buf, "X-Alarm-Threshold: "))) parse_float(v, alarm_threshold_c);
+    if ((v = header_value(buf, "X-Alarm-Delay: ")))     parse_u32(v, alarm_delay_min);
+    if ((v = header_value(buf, "X-Last-Hour: ")))       parse_u32(v, server_last_key);
 
     return 1;
 }

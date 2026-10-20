@@ -62,6 +62,10 @@ uint8_t ds18b20_read_temp(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim
 
     // Combine LS/MS bytes into a signed 16 bit value
     int16_t temp_byte = (scratchpad[1] << 8) | scratchpad[0];
+    // 85.0 C (0x0550) is the sensor's power-on value, returned when a conversion
+    // didn't actually run; anything outside -55..125 C is not a real reading
+    if (temp_byte == 0x0550 || temp_byte < -880 || temp_byte > 2000) return 0;
+
     // Divide by 16 to get actual temp in C
     *temp_out = ((float)temp_byte) / 16;
     return 1; // Success

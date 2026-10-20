@@ -81,7 +81,7 @@ Pins are fixed per peripheral instance by the `Init` functions. Pins on a differ
 | | I2C3 | PA8 SCL, PC9 SDA | AF4 |
 | SPI | SPI1 only | PA5 SCK, PA6 MISO, PA7 MOSI | AF5. Chip select is a plain GPIO you choose |
 | PWM | TIM2 channel 2 only | PA1 | AF1 |
-| OneWire | any GPIO | your choice | open-drain with an **external** pull-up (about 4.7 kΩ) |
+| OneWire | any GPIO | your choice | open-drain with an **external** pull-up (2-5 kΩ; ColdTrace uses 2 kΩ) |
 
 **Timer roles**, with the allocation ColdTrace uses:
 
@@ -154,8 +154,9 @@ Pins are fixed per peripheral instance by the `Init` functions. Pins on a differ
 `ow_init`, `ow_reset`, `ow_write_bit`, `ow_read_bit`, `ow_write_byte`, `ow_read_byte`.
 
 - Bit-banged on any GPIO, timed by a microsecond timer. Timings follow the DS18B20 datasheet: reset pulse 480 µs with presence sampled at 100 µs, write-1 slot 5 µs low, write-0 slot 60 µs low, read slot sampled about 7 µs after the falling edge.
-- The pin is **open-drain**: the driver only ever pulls low or releases. You need an **external pull-up** (about 4.7 kΩ to 3.3 V); the internal one is too weak.
+- The pin is **open-drain**: the driver only ever pulls low or releases. You need an **external pull-up** (2-5 kΩ to 3.3 V; ColdTrace uses 2 kΩ); the internal one is too weak.
 - Bytes go LSB first. `ow_init` also reconfigures the timer, so call it again if another driver took the timer in between (see ESP below).
+- **Interrupts are held off for each bit slot** (about 65 µs, restored to the caller's previous state), because an interrupt landing inside a slot can stretch it past the 15 µs sampling window and flip the bit. Interrupts that arrive meanwhile are not lost, they run right after the slot. `ow_reset` is not protected: its windows are hundreds of µs wide.
 - Slot timing depends on the code running fast enough. The read sample point has a 15 µs window; ColdTrace runs this at 16 MHz with `-O0` and it holds, but re-check if you slow the clock or add work between the calls.
 
 ### DS18B20
@@ -165,7 +166,7 @@ Pins are fixed per peripheral instance by the `Init` functions. Pins on a differ
 - Single sensor on the bus (it uses Skip ROM, no addressing), powered from Vdd, not parasite power.
 - Two calls so your code isn't stuck waiting: `start_conversion` begins a measurement; **wait at least 750 ms** (default 12-bit resolution), then `read_temp` returns the value in °C (0.0625 °C steps).
 - `read_temp` reads all nine scratchpad bytes and checks the sensor's own CRC-8. It also rejects an all-zero scratchpad, because a data line shorted to ground reads as zeros and zeros pass the CRC, which would otherwise show as a perfectly valid 0.0 °C. A missing sensor, a bad CRC or a stuck bus all return `0` and leave the output unchanged.
-- If you read before the conversion finishes the sensor returns its power-on value of 85.0 °C, which is a valid reading as far as the driver can tell. Respect the wait time.
+- `read_temp` also rejects **exactly 85.0 °C** and anything outside -55 to +125 °C. 85.0 °C (`0x0550`) is the sensor's power-on value, returned with a valid CRC when a conversion didn't actually run (a missed Convert T, a power glitch), so it is treated as a failed read, not a measurement. Still respect the 750 ms wait.
 
 ### DS3231
 
@@ -174,7 +175,7 @@ Pins are fixed per peripheral instance by the `Init` functions. Pins on a differ
 - Runs on I2C at address `0x68`. `RTC_Time` holds seconds, minutes, hours (24-hour), day of week, date, month and a two-digit year.
 - `rtc_set_time` writes all seven time registers in one burst and then clears the chip's Oscillator Stop Flag.
 - `rtc_time_is_valid` reads that flag. It is set when the chip lost all power (dead backup battery, or first power-up), meaning the time can't be trusted. Check it at boot and set the clock from another source when it reports `0`.
-- `rtc_get_time` does not check the flag; call `rtc_time_is_valid` for that.
+- `rtc_get_time` does not check the oscillator flag; call `rtc_time_is_valid` for that. It does check that every decoded field is in range (seconds and minutes up to 59, hours up to 23, date 1-31, month 1-12, year up to 99) and returns `0` otherwise, so a glitched read on the bus is rejected and not handed back as a nonsense time.
 - Alarms, temperature and the square-wave output are not used.
 
 ### SD card
@@ -244,7 +245,7 @@ For the hardware side, see the "bring-up" section of [`notes.md`](notes.md). The
 | Area | State |
 |---|---|
 | GPIO, TIM, UART, I2C, SPI, OneWire, DS18B20, DS3231, SD, OLED | Run on real hardware (WeAct STM32F446RE) as part of ColdTrace |
-| ESP (reset, join, live and hourly POST, time and config sync, idle hook) | Run on real hardware. The request/reply logic was also simulated on a host with a fake UART (join failure, timeouts, back-to-back posts) |
+| ESP (reset, join, live and hourly POST, time and config sync, idle hook) | Run on real hardware |
 | PWM | Not used by ColdTrace; the latest edits to it have not been run |
 | This revision's changes (integer baud calculation, I2C fast-mode divider rounded up, SD wait lengths, DS18B20 stuck-bus check, DS3231 century bit) | Compile clean with `-Wall -Wextra`. The DS18B20 check and baud values were verified on a host; the rest need a run on the board |
 

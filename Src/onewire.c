@@ -1,6 +1,17 @@
 #include "onewire.h"
 #include "clock.h"
 
+// Interrupts off for one bit slot (~65 µs); returns the old state for ow_irq_restore
+static inline uint32_t ow_irq_save(void) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    return primask;
+}
+
+static inline void ow_irq_restore(uint32_t primask) {
+    __set_PRIMASK(primask);
+}
+
 void ow_init(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim_port) {
     GPIO_Init(gpio_port, pin, OUTPUT, OPEN_DRAIN); // open-drain setup
     TIM_Init(tim_port, TIM_1MHZ_PRESCALER, 65535); // 1MHz tick
@@ -27,6 +38,7 @@ uint8_t ow_reset(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim_port) {
 }
 
 void ow_write_bit(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim_port, uint8_t bit) {
+    uint32_t primask = ow_irq_save();
     if (bit == 1) {
         // Pull the line low for 5us
         GPIO_SetMode(gpio_port, pin, OUTPUT);
@@ -46,9 +58,11 @@ void ow_write_bit(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim_port, u
 
     // Recovery time before next slot
     TIM_Delay_us(tim_port, 2);
+    ow_irq_restore(primask);
 }
 
 uint8_t ow_read_bit(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim_port){
+    uint32_t primask = ow_irq_save();
     // Pull the line low for at least 1us to initialize read
     GPIO_SetMode(gpio_port, pin, OUTPUT);
     GPIO_Set(gpio_port, pin, 0);
@@ -60,6 +74,7 @@ uint8_t ow_read_bit(GPIO_TypeDef *gpio_port, uint8_t pin, TIM_TypeDef *tim_port)
     uint8_t read_bit = GPIO_Read(gpio_port, pin);
     // Wait remainder of slot (60us + recovery time)
     TIM_Delay_us(tim_port, 55);
+    ow_irq_restore(primask);
     return read_bit;
 }
 

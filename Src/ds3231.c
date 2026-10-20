@@ -57,6 +57,14 @@ uint8_t rtc_get_time(I2C_TypeDef *port, TIM_TypeDef *tim_port, RTC_Time *time) {
         time->month   = bcd_to_dec(buffer[5] & 0b00011111U); // bit 7 is the century flag
         time->year    = bcd_to_dec(buffer[6]);
 
+        // A glitched I2C read decodes to nonsense (all-0xFF gives hour 45, month 25); reject it
+        // rather than hand the app a time it would file hourly records under
+        if (time->seconds > 59 || time->minutes > 59 || time->hours > 23 ||
+            time->date < 1 || time->date > 31 || time->month < 1 || time->month > 12 ||
+            time->year > 99) {
+            return 0;
+        }
+
         return 1;
 }
 

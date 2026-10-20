@@ -203,6 +203,8 @@ No equivalent masking is needed on the write side (`dec_to_bcd()` on any hour 0-
 
 **`rtc_get_time(*time)`:** one `I2C_ReadBytes()` burst call starting at register `0x00` for 7 bytes (relying on the chip's auto-increment to walk seconds through year in one atomic transaction), then each byte through `bcd_to_dec()` (masked for hours) into the matching `RTC_Time` struct field via the pointer (`time->field = ...`, arrow operator since `time` is a pointer to the struct, not the struct itself).
 
+**Sanity check on the decoded time.** I2C reads can glitch (bus noise, a clock edge during a transfer), and a bad burst decodes to nonsense that still looks like numbers: an all-0xFF read decodes to seconds 165, hour 45, month 25. `rtc_get_time()` now returns failure unless every field is in range (seconds and minutes ≤ 59, hours ≤ 23, date 1-31, month 1-12, year ≤ 99). That matters because the app files hourly records under a key built from this time; a garbage time would end the hour in progress early and save a partial record under the wrong key. Rejecting it makes the app skip that one read and use the next.
+
 **`rtc_set_time(*time)`:** the mirror operation, each struct field through `dec_to_bcd()` into a local `buffer[7]`, then one `I2C_WriteBytes()` burst call to push all 7 at once. Per the datasheet, writing all 7 registers within the same burst (rather than 7 separate writes) matters because "the countdown chain is reset whenever the seconds register is written... the remaining time and date registers must be written within 1 second" to avoid rollover inconsistencies, a single held-open transaction guarantees this automatically.
 
 **Why a burst read/write instead of 7 separate `ReadReg`/`WriteReg` calls:** efficiency (one Start/Stop cycle instead of seven), and atomicity, separate reads risk a value changing (e.g. seconds rolling over) between calls, giving a self-inconsistent time snapshot. The datasheet confirms the chip is explicitly designed around this: reads are synchronized to a secondary buffer on every I2C START specifically so a multi-byte burst read is guaranteed self-consistent even if the internal clock ticks over mid-read.
@@ -269,7 +271,7 @@ Resetting `CNT` every call sidesteps any overflow/wraparound concerns entirely, 
 No dedicated peripheral, bit-banged over GPIO + `TIM_Delay_us`. Every timing number below comes from the DS18B20 datasheet's AC Electrical Characteristics table and Figure 15/16 timing diagrams.
 
 **One-time setup (`ow_init`, called once at startup, not per-transaction):**
-- `GPIO_Init(gpio_port, pin, OUTPUT, OPEN_DRAIN)`, the DQ pin must be open-drain since the DS18B20 can only pull the line LOW, never drive it HIGH, an external ~4.7kΩ pull-up resistor between DQ and VCC does the rest
+- `GPIO_Init(gpio_port, pin, OUTPUT, OPEN_DRAIN)`, the DQ pin must be open-drain since the DS18B20 can only pull the line LOW, never drive it HIGH, an external pull-up resistor between DQ and VCC does the rest (the datasheet's typical value is 4.7kΩ; anything from about 2kΩ to 5kΩ works, and ColdTrace's schematic uses 2kΩ)
 - `TIM_Init(tim_port, 16, 65535)`, configures the 1MHz tick rate `TIM_Delay_us` needs
 
 **`ow_reset()`, the handshake every single transaction begins with:**
@@ -303,6 +305,36 @@ Assembling a byte from bits read back, in the same LSB-first order:
 byte |= bit << i;   // shift the just-read bit up to position i, OR it in without disturbing bits already placed
 ```
 
+### Protecting bit slots from interrupts (`ow_irq_save` / `ow_irq_restore`)
+
+A bit slot is only ~65µs long and the sampling windows inside it are tight: a read has to be sampled within 15µs of the master pulling the line low (`tRDV`), and a write-1 has to release within 15µs (`tLOW1`). Any interrupt that lands inside a slot stretches it. Once the application grew interrupts (the 1 ms SysTick clock, the button on EXTI3, the 5 kHz TIM6 tick that does soft PWM on the LEDs) that stopped being hypothetical: an interrupt arriving between the falling edge and the sample can push the sample past 15µs and flip the bit. The scratchpad CRC would catch the result and the reading would be dropped, but with enough interrupts a large share of readings could be lost, silently.
+
+So each bit function turns interrupts off for exactly one slot and puts them back afterwards:
+```c
+uint32_t primask = ow_irq_save();   // interrupts OFF for the next ~65µs
+...                                  // the timing-critical part of the bit
+ow_irq_restore(primask);            // back to how they were
+```
+
+**What `PRIMASK` is.** A single-bit register inside the Cortex-M core, a master switch that sits above every peripheral's own interrupt enable. `0` = interrupts allowed (the normal state), `1` = blocked. An interrupt that fires while it is 1 isn't lost: the hardware remembers it is pending and runs it the moment `PRIMASK` returns to 0. The CMSIS helpers: `__disable_irq()` sets it to 1, `__enable_irq()` clears it to 0, `__get_PRIMASK()` / `__set_PRIMASK(x)` read and write it directly.
+
+**Why save and restore instead of disable and enable.**
+```c
+static inline uint32_t ow_irq_save(void) {
+    uint32_t primask = __get_PRIMASK();   // remember the caller's setting first
+    __disable_irq();
+    return primask;
+}
+static inline void ow_irq_restore(uint32_t primask) {
+    __set_PRIMASK(primask);               // put back exactly what it was
+}
+```
+A plain `__disable_irq()` ... `__enable_irq()` pair always ends with interrupts ON. If a caller already had them off (for example if 1-Wire were ever driven from inside an interrupt handler), that would switch them back on behind the caller's back. Saving the old value and restoring it is correct whichever state the caller was in. Honest note: nothing in this project calls the 1-Wire functions with interrupts already off (they run from the main loop), so the plain pair would behave identically today. The save/restore form is there so it stays correct if that ever changes.
+
+**Why it is safe to do this.** Each off-period is one bit slot, ~65µs, far shorter than any deadline in the system. Interrupts that arrive meanwhile wait and run immediately afterwards: SysTick (1 ms period) can't lose a tick because its pending flag holds it, the LED tick just runs a few µs late, and the button interrupt only records a timestamp. Between bits the loop overhead lets pending interrupts through, so no interrupt is held for more than one slot at a time.
+
+**What is deliberately not protected: `ow_reset()`.** Its timings are 480µs-long windows with a presence-sample window of 60-240µs, so a few µs of interrupt delay doesn't matter, and holding interrupts off for ~960µs would delay the 1 ms clock noticeably.
+
 ---
 
 ## DS18B20 (device-specific layer, built on OneWire)
@@ -331,6 +363,8 @@ static uint8_t ds18b20_begin(...) {
 **`ds18b20_read_temp()`:** `ds18b20_begin()`, then `ow_write_byte(DS18B20_READ_SCRATCHPAD)`, then `ow_read_byte()` 9 times for the whole scratchpad (temp LS/MS bytes, `TH`, `TL`, config, 3 reserved bytes, then the chip's own CRC byte).
 
 **Scratchpad CRC check:** 1-Wire is bit-banged over an unshielded, unclocked GPIO line (see the timing notes below) — noise, a delayed sample, or a slow pull-up edge can flip a bit in transit with nothing to catch it. The DS18B20 computes a CRC8 over scratchpad bytes 0-7 and appends it as byte 8 specifically so a reader can verify the transfer; `ds18b20_read_temp()` recomputes the same CRC8 locally (`ow_crc8()`, standard Dallas/Maxim polynomial `x⁸+x⁵+x⁴+1`, reflected form `0x8C`, processed LSB-first per bit — same LSB-first convention as the rest of 1-Wire) and returns failure (0) on a mismatch instead of decoding a possibly-corrupted temperature. `app.c` already treats a 0 return as "read failed" and retries next loop, so this turns a silent bad reading into a skipped one. Previously only bytes 0-1 were read and trusted unconditionally, with no way to tell a corrupted transfer apart from a real (if wrong-looking) temperature.
+
+**Rejecting the 85°C power-on value and out-of-range readings.** The CRC only proves the bytes arrived intact, not that they are a measurement. A DS18B20 whose conversion didn't actually run (a missed Convert T command, a power glitch) returns its power-on scratchpad: temperature register `0x0550`, which is exactly **85.0°C**, with a perfectly valid CRC. In a freezer that would show up as one second at 85°C: a red flash, and a ruined hour maximum in the history. `ds18b20_read_temp()` now returns failure for `0x0550`, and for anything outside the sensor's real range of -55°C to +125°C (raw `-880` to `2000`), which is not a real reading whatever the CRC says. The caller already treats 0 as "read failed" and keeps the last good value.
 
 **Temperature register format:** 16-bit two's complement, LS byte holds bits 2³ down to 2⁻⁴ (4 whole-number bits, 4 fractional bits), MS byte holds 5 sign bits plus bits 2⁶-2⁴. Since the smallest bit is 2⁻⁴ = 1/16, the whole 16-bit value scaled by 1/16 gives the temperature directly:
 ```c
